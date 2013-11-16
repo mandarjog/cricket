@@ -59,6 +59,20 @@ def playerresults_row(tr):
     return (runs,mins,balls,fours,sixes,pos,dismissal,odi)
 
 
+def matches_row(tr):
+    tds = tr.findAll('td')
+    team1 = tds[0].text
+    team2 = tds[1].text
+    winner = tds[2].text
+    margin = tds[3].text
+    ground = tds[4].text
+    match_date = datetime.strptime(tds[5].text, "%b %d, %Y").date()
+    id = int(tds[6].text.split()[2])
+    odi_url = tds[6].find('a')['href']
+
+    return (id, team1, team2, winner, margin, ground, match_date, odi_url)
+
+
 def matchresults_row(tr):
     tds=tr.findAll('td')
     score = int(tds[0].text.split('/',1)[0])
@@ -113,13 +127,40 @@ def import_results(data, team, import_func, player=None):
             print e
 
     print "processed ", cnt,"/", len(trs)
+
+def import_matches(data):
+    soup = BeautifulSoup(data)
+
+    tables=soup.findAll('table', {'class': 'engineTable'})
+    # find table with correct caption
+    maintable = None
+    for table in tables:
+        cap=table.find('caption')
+        if cap != None and cap.text == 'Match results':
+            maintable=table
+            break
+    trs = maintable.findAll ('tr', {'class':'data1'})
+    cnt = 0
+    for tr in trs:
+        try:
+            res = matches_row(tr)
+            mysql_execute("INSERT IGNORE INTO odi values(%s,%s,%s,%s,%s,%s,%s,%s)", *res)
+            cnt += 1
+        except Exception, e:
+            print e
+
+def import_match(data):
+    soup = BeautifulSoup(data)
+
+
 def main():
     import sys
-    #data=open(sys.argv[1], 'rt').read()
+    data=open(sys.argv[1], 'rt').read()
+    import_matchresults(data, sys.argv[2])
     #data=open('./sachin.html', 'rt').read()
     #import_playerresults(data, 'india', 'sachin tendulkar')
-    data=open('./viv_richards.html', 'rt').read()
-    import_playerresults(data, 'west indies', 'viv richards')
+    #data=open('./viv_richards.html', 'rt').read()
+    #import_playerresults(data, 'west indies', 'viv richards')
     #data=open('./india.html', 'rt').read()
     #import_matchresults(data, 'india')
     #data=open('./pakistan.html', 'rt').read()
