@@ -15,6 +15,7 @@ from crick_util import mysql_execute, mysql_fetchall
 from BeautifulSoup import BeautifulSoup
 import difflib
 import itertools
+import traceback
 
 
 DIRNAME = os.path.dirname(os.path.abspath(__file__))
@@ -74,8 +75,10 @@ RE_CB = re.compile("c\s+(.*)\s+b\s+(.*)$")
 RE_STB = re.compile("st\s+(.*)\s+b\s+(.*)$")
 RE_B = re.compile("b\s+(.*)$")
 RE_RO = re.compile("run out \((\w+)(/s+)*\)")
-RE_FOW = re.compile("(\d+)-(\d+)\*{0,1}\s*(.*?),\s*(\S+)")
-
+# >10-220 (Nasir Hossain, 48.5 ov)<
+# >2-35 (Tendulkar)<
+#RE_FOW = re.compile("(\d+)-(\d+)\*{0,1}\s*(.*?),\s*(\S+)")
+RE_FOW = re.compile("(\d+)-(\d+)\*{0,1}\s*\((.*)")
 # runout ==>  run out (Khan/Karthik)
 # lbw b bhubhu
 
@@ -94,8 +97,6 @@ def wicket(bat, wtype, bowl=None, assist=None):
     bat.out_by = bowl
     bat.out_assist = assist
 
-    print wtype, "==>", bowl, assist
-
 
 def resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2):
     player = {}
@@ -104,7 +105,6 @@ def resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2):
         player[bn.player] = bn.playerid
 
     names = player.keys()
-    print names
 
     for bat in itertools.chain(bat1, bat2):
         if bat.dismissal.startswith("run out"):
@@ -127,7 +127,7 @@ def resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2):
             # if caught and bowled grp[0] = "&"
             bowled = grp[1]
             caught = grp[0]
-            if caught == "&":
+            if caught == "&" or caught == "&amp;":
                 caught = bowled
             wicket(bat, "caught", resolve_name(bowled, names), resolve_name(caught, names))
             continue
@@ -148,8 +148,6 @@ def resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2):
         dm = bat.dismissal.split()[0]
         wicket(bat, dm)
 
-    #import pdb; pdb.set_trace()
-    print "ok"
     return names
 
 
@@ -158,82 +156,108 @@ def update_summary(odi, tbl, teamNo):
         summary = trs[-1]
         runs = summary.find('td', {'class': 'battingRuns'}).text
         wick = summary.find('td', {'class': 'battingDismissal'})
-        spl = wick.text[1:-1].split()
+        spl = wick.text[1:-1].split(';')
+        wck = spl[0].strip().split()[0]
+        if wck == "all":
+            wck = "10"
+        ovr = spl[1].strip().split()[0]
+
         SQL = "update odi set team{}_runs=%s, team{}_wickets=%s, team{}_overs=%s where id=%s".format(teamNo,
                                      teamNo, teamNo)
-        mysql_execute(SQL, runs, spl[0], spl[2], odi)
+        mysql_execute(SQL, runs, wck, ovr, odi)
 
         # runs, wickets, overs
-        return (runs, spl[0], spl[2])
+        return (runs, wck, ovr)
 
 
-def fetch_odi(year, odis=None):
+def fetch_odi(year, odi_ids=None):
     sql = "select id, odi_url from odi where match_date>='{}-01-01' and match_date <= '{}-12-31'".format(year, year)
-    if odis is not None:
-        sql += " and id in ({})".format(str(odis)[1:-1])
+    if odi_ids is not None:
+        sql += " and id in ({})".format(str(odi_ids)[1:-1])
     odis = mysql_fetchall(sql)
     datadir = DIRNAME + "/data"
 
     for idx, odi in enumerate(odis):
-        matchfile = "{}/matche.{}".format(datadir, odi.id)
-        match_url = "http://www.espncricinfo.com{}".format(odi.odi_url)
-        if os.path.exists(matchfile):
-            data = open(matchfile).read()
-        else:
-            print match_url
-            data = requests.get(match_url).text
-            with open(matchfile, "wt") as fl:
-                fl.write(data)
+        try:
+            matchfile = "{}/matche.{}".format(datadir, odi.id)
+            match_url = "http://www.espncricinfo.com{}".format(odi.odi_url)
+            if os.path.exists(matchfile):
+                data = open(matchfile).read()
+            else:
+                print match_url
+                data = requests.get(match_url).text
+                with open(matchfile, "wt") as fl:
+                    fl.write(data)
 
-        soup = BeautifulSoup(data)
-        tbl = soup.findAll('table', {'id': 'inningsBat1'})
-        th = tbl[0].find('tr', {'class': 'inningsHead'})
-        summ1 = update_summary(odi.id, tbl, 1)
-        tdd = th.findAll('td')[1]
-        team1 = tdd.text.partition('innings')[0].strip()
-        bat1 = get_innings(tbl)
-        tbl = soup.findAll('table', {'id': 'inningsBowl1'})
-        bowl1 = get_innings(tbl)
-        tbl = soup.findAll('table', {'id': 'inningsBat2'})
-        summ2 = update_summary(odi.id, tbl, 2)
-        th = tbl[0].find('tr', {'class': 'inningsHead'})
-        tdd = th.findAll('td')[1]
-        team2 = tdd.text.partition('innings')[0].strip()
-        bat2 = get_innings(tbl)
-        tbl = soup.findAll('table', {'id': 'inningsBowl2'})
-        bowl2 = get_innings(tbl)
-        names = resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2)
-        # write results to database
-        print bat1, bat2
+            soup = BeautifulSoup(data)
+            tbl = soup.findAll('table', {'id': 'inningsBat1'})
+            th = tbl[0].find('tr', {'class': 'inningsHead'})
+            summ1 = update_summary(odi.id, tbl, 1)
+            tdd = th.findAll('td')[1]
+            team1 = tdd.text.partition('innings')[0].strip()
+            bat1 = get_innings(tbl)
+            tbl = soup.findAll('table', {'id': 'inningsBowl1'})
+            bowl1 = get_innings(tbl)
+            tbl = soup.findAll('table', {'id': 'inningsBat2'})
+            summ2 = update_summary(odi.id, tbl, 2)
+            th = tbl[0].find('tr', {'class': 'inningsHead'})
+            tdd = th.findAll('td')[1]
+            team2 = tdd.text.partition('innings')[0].strip()
+            bat2 = get_innings(tbl)
+            tbl = soup.findAll('table', {'id': 'inningsBowl2'})
+            bowl2 = get_innings(tbl)
+            names = resolve_match(bat1, bowl1, bat2, bowl2, summ1, summ2)
+            # write results to database
+            # print bat1, bat2
 
-        tbls = soup.findAll('table', {'class': 'inningsTable'})
-        fow = {}
-        for _tbl in tbls:
-            _trs = _tbl.findAll('tr')
-            if len(_trs) > 1:
-                continue
-            if _trs[0].text.lower().startswith("fall of wickets"):
-                for ll in _trs[0].text[len("Fall of wickets"):].split('),'):
-                    if "not out" in ll:
-                        continue
-                    mm = RE_FOW.match(ll)
-                    if mm:
-                        grp = mm.groups()
-                        fow[resolve_name(grp[2], names)] = (int(grp[0]), int(grp[1]), int(float(grp[3])))
+            tbls = soup.findAll('table', {'class': 'inningsTable'})
+            fow = {}
+            for _tbl in tbls:
+                _trs = _tbl.findAll('tr')
+                if len(_trs) > 1:
+                    continue
+                if _trs[0].text.lower().startswith("fall of wickets"):
+                    for ll in _trs[0].text[len("Fall of wickets"):].split('),'):
+                        mm = RE_FOW.match(ll)
+                        if "retired" in ll and mm:
+                            grp = mm.groups()
+                            name, _, ov = grp[2].partition(",")
+                            fow[resolve_name(name, names)] = (int(grp[0]), int(grp[1]), 5)
+                            continue
+                        if "not out" in ll:
+                            continue
+                        if mm:
+                            grp = mm.groups()
+                            name, _, ov = grp[2].partition(",")
+                            if ov == "":
+                                ov = "0.0"
+                            else:
+                                ov = ov.strip().split()[0]
 
-        # set fow on bat1 and bat2
-        for bt in itertools.chain(bat1, bat2):
-            if bt.out_type == "notout":
-                continue
-            if not hasattr(bt, 'out_over'):
-                fw = fow[bt.player]
-                bt.out_wicket_no = fw[0]
-                bt.out_score = fw[1]
-                bt.out_over = fw[2]
+                            fow[resolve_name(name, names)] = (int(grp[0]), int(grp[1]), int(float(ov)))
 
-        write_vals(bat1, 1, team1, odi.id, summ1)
+            print fow
 
-        write_vals(bat2, 2, team2, odi.id, summ2)
+            # set fow on bat1 and bat2
+            for bt in itertools.chain(bat1, bat2):
+                if bt.out_type == "notout":
+                    continue
+                if not hasattr(bt, 'out_over'):
+                    fw = fow[bt.player]
+                    bt.out_wicket_no = fw[0]
+                    bt.out_score = fw[1]
+                    bt.out_over = fw[2]
+
+            write_vals(bat1, 1, team1, odi.id, summ1)
+
+            write_vals(bat2, 2, team2, odi.id, summ2)
+            print "Wrote odi : {}, inns1 = {}, inns2 = {}".format(odi, len(bat1), len(bat2))
+        except Exception as ex:
+            print "Error importing odi {}".format(odi)
+            traceback.print_exc()
+            if odi_ids is not None:
+                raise
+            print ex
 
         #if idx == 3:
         #    break
@@ -245,8 +269,6 @@ def write_vals(bt, inns, team, odi, summ):
     """
 
     """
-    print team, inns, bt
-
     SQL = ("INSERT INTO `score`(odi, team, player, inns, runs, balls, mins, fours, sixes, pos,"
            "`out`, out_over, out_score, out_wicket_no, out_by, out_assist) VALUES ")
     vals = []
@@ -254,7 +276,7 @@ def write_vals(bt, inns, team, odi, summ):
         row = "("
         row += '{},"{}","{}",{},{},{},'.format(odi, team, _mysql.escape_string(bb.player), inns, bb.runs, bb.balls)
         row += '{},{},{},{},'.format(bb.mins, bb.fours, bb.sixes, bb.pos)
-        if bb.out_type == 'notout':
+        if bb.out_type == 'notout' or bb.out_type == 'retired':
             row += '"notout",NULL,NULL,NULL,'
             row += 'NULL,NULL'
         else:
@@ -271,9 +293,9 @@ def write_vals(bt, inns, team, odi, summ):
                 row += '"{}"'.format(bb.out_assist)
             else:
                 row += 'NULL'
+        row = row.replace('"None"', 'NULL')
         row += ')'
 
-        print row
         vals.append(row)
 
     mysql_execute(SQL + ",".join(vals))
@@ -291,7 +313,6 @@ def get_innings(tbl):
         for tr in trs:
             td = tr.findAll('td')
             if tr['class'] == "inningsRow":
-                print td[4]['class']
                 if "battingDetails" == td[4]['class']:
                     if "battingDismissal" != td[2]['class']:
                         continue
