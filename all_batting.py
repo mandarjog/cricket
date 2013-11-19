@@ -84,12 +84,18 @@ RE_FOW = re.compile("(\d+)-(\d+)\*{0,1}\s*\((.*)")
 
 
 def resolve_name(pname, names):
-    ns = difflib.get_close_matches(pname.strip(), names, n=1)
+    pname = pname.strip()
+    ns = difflib.get_close_matches(pname, names, n=1)
 
     if len(ns) > 0:
         return ns[0]
     else:
-        return pname
+        ns = difflib.get_close_matches(pname, names, n=1, cutoff=0.4)
+        if len(ns) > 0:
+            print "Trying approx match {} ==> {}  {}".format(pname, ns[0], names)
+            return ns[0]
+        else:
+            return pname
 
 
 def wicket(bat, wtype, bowl=None, assist=None):
@@ -170,14 +176,27 @@ def update_summary(odi, tbl, teamNo):
         return (runs, wck, ovr)
 
 
-def fetch_odi(year, odi_ids=None):
-    sql = "select id, odi_url from odi where match_date>='{}-01-01' and match_date <= '{}-12-31'".format(year, year)
+def fetch_odi(year, odi_ids=None, force=False, toyear=None):
+    toyear = toyear or year
+    sql = """select id, odi_url, winner
+             from odi where match_date>='{}-01-01' and
+             match_date <= '{}-12-31'""".format(year, toyear)
     if odi_ids is not None:
         sql += " and id in ({})".format(str(odi_ids)[1:-1])
     odis = mysql_fetchall(sql)
     datadir = DIRNAME + "/data"
 
     for idx, odi in enumerate(odis):
+        if not force:
+            scores = mysql_fetchall("select inns, count(*) as cnt from score where odi=%s group by inns", odi.id)
+            if len(scores) > 0:
+                slist = [r.cnt for r in scores if r.cnt >= 2]
+                if len(slist) == 2:
+                    print "{} records already in db for {}".format(slist, odi)
+                    continue
+                elif odi.winner.lower() == 'no result':
+                    continue
+
         try:
             matchfile = "{}/matche.{}".format(datadir, odi.id)
             match_url = "http://www.espncricinfo.com{}".format(odi.odi_url)
@@ -187,7 +206,10 @@ def fetch_odi(year, odi_ids=None):
                 print match_url
                 data = requests.get(match_url).text
                 with open(matchfile, "wt") as fl:
-                    fl.write(data)
+                    try:
+                        fl.write(data)
+                    except UnicodeEncodeError:
+                        fl.write(data.encode('utf-8'))
 
             soup = BeautifulSoup(data)
             tbl = soup.findAll('table', {'id': 'inningsBat1'})
@@ -240,7 +262,7 @@ def fetch_odi(year, odi_ids=None):
 
             # set fow on bat1 and bat2
             for bt in itertools.chain(bat1, bat2):
-                if bt.out_type == "notout":
+                if bt.out_type not in WICKET_SET:
                     continue
                 if not hasattr(bt, 'out_over'):
                     fw = fow[bt.player]
@@ -264,6 +286,8 @@ def fetch_odi(year, odi_ids=None):
 
 import _mysql
 
+WICKET_SET = set(["runout", "lbw", "caught", "bowled", "stumped"])
+
 
 def write_vals(bt, inns, team, odi, summ):
     """
@@ -276,7 +300,7 @@ def write_vals(bt, inns, team, odi, summ):
         row = "("
         row += '{},"{}","{}",{},{},{},'.format(odi, team, _mysql.escape_string(bb.player), inns, bb.runs, bb.balls)
         row += '{},{},{},{},'.format(bb.mins, bb.fours, bb.sixes, bb.pos)
-        if bb.out_type == 'notout' or bb.out_type == 'retired':
+        if bb.out_type not in WICKET_SET:
             row += '"notout",NULL,NULL,NULL,'
             row += 'NULL,NULL'
         else:
@@ -309,6 +333,30 @@ def cleanup_name(diss):
 
 def get_innings(tbl):
         trs = filt(tbl[0].findAll('tr'))
+        # check columns
+        heading = tbl[0].find('tr', {'class': 'inningsHead'})
+        hdrs = {}
+        hdridx = 3
+        for td in heading.findAll('td'):
+            col = td.get('title')
+            if not col:
+                continue
+            if 'runs' in col:
+                hdrs['runs'] = hdridx
+                hdridx += 1
+            elif 'balls' in col:
+                hdrs['balls'] = hdridx
+                hdridx += 1
+            elif 'minutes' in col:
+                hdrs['minutes'] = hdridx
+                hdridx += 1
+            elif 'fours' in col:
+                hdrs['fours'] = hdridx
+                hdridx += 1
+            elif 'sixes' in col:
+                hdrs['sixes'] = hdridx
+                hdridx += 1
+
         obs = []
         for tr in trs:
             td = tr.findAll('td')
@@ -326,9 +374,15 @@ def get_innings(tbl):
                     ob.dismissal = cleanup_name(td[2].text)
                     ob.runs = getint(td[3].text)
                     ob.mins = getint(td[4].text)
-                    ob.balls = getint(td[5].text)
-                    ob.fours = getint(td[6].text)
-                    ob.sixes = getint(td[7].text)
+                    ob.balls = getint(td[hdrs['balls']].text)
+                    if 'fours' in hdrs:
+                        ob.fours = getint(td[hdrs['fours']].text)
+                    else:
+                        ob.fours = 0
+                    if 'sixes' in hdrs:
+                        ob.sixes = getint(td[hdrs['sixes']].text)
+                    else:
+                        ob.sixes = 0
                 elif "bowlingDetails" == td[4]['class']:
                     ob = obj()
                     obs.append(ob)
